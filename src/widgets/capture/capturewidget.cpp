@@ -46,6 +46,11 @@
 #define MOUSE_DISTANCE_TO_START_MOVING 3
 
 auto const MOUSE_WHEEL_TRESHOLD = 60;
+// Taking the keyboard focus back on X11, see updateFocusReclaim()
+auto const FOCUS_RECLAIM_DELAY_MS = 50;
+auto const FOCUS_RECLAIM_ATTEMPTS = 4;
+auto const FOCUS_RECLAIM_LOSSES = 4;
+auto const FOCUS_RECLAIM_RESET_MS = 10000;
 
 // CaptureWidget is the main component used to capture the screen. It contains
 // an area of selection with its respective buttons.
@@ -98,6 +103,11 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
     connect(&m_xywhTimer, &QTimer::timeout, this, &CaptureWidget::xywhTick);
     // else xywhTick keeps triggering when not needed
     m_xywhTimer.setSingleShot(true);
+    m_focusReclaimTimer.setSingleShot(true);
+    connect(&m_focusReclaimTimer,
+            &QTimer::timeout,
+            this,
+            &CaptureWidget::reclaimFocus);
     setAttribute(Qt::WA_DeleteOnClose);
     setAttribute(Qt::WA_QuitOnClose, false);
     m_opacity = m_config.contrastOpacity();
@@ -186,6 +196,8 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             // crash. It's needed on Cosmic
             setWindowFlags(Qt::WindowStaysOnTopHint | Qt::FramelessWindowHint |
                            Qt::Tool);
+            m_focusReclaimEnabled =
+              QGuiApplication::platformName() == QLatin1String("xcb");
         }
 #endif
 
@@ -1193,6 +1205,78 @@ void CaptureWidget::changeEvent(QEvent* e)
         // Update the message in the bottom right corner. A rough estimate is
         // used for the update rect
         update(QRect(bottomRight - QPoint(1000, 200), bottomRight));
+        if (m_focusReclaimEnabled) {
+            updateFocusReclaim();
+        }
+    }
+}
+
+void CaptureWidget::showEvent(QShowEvent* e)
+{
+    QWidget::showEvent(e);
+    // Another application can also take the focus while we are being shown
+    startFocusReclaim();
+}
+
+// On X11 the overlay stays on top of the window that takes the keyboard focus
+// from it, so Esc and all other shortcuts silently go to a hidden window
+// (#1072). When another application takes the focus while the pointer is on
+// the overlay, ask for it again a few times. Don't fight a user working on
+// another screen, and give up after FOCUS_RECLAIM_LOSSES losses that each come
+// less than FOCUS_RECLAIM_RESET_MS after we got the focus, so a deliberate
+// switch or an application that insists wins in the end.
+void CaptureWidget::updateFocusReclaim()
+{
+    if (QApplication::activeWindow() == this) {
+        if (!m_activeSince.isValid()) {
+            // First activation, the window is mapped now
+            startFocusReclaim();
+        } else if (m_focusLosses > FOCUS_RECLAIM_LOSSES) {
+            // We gave up, so the user gave us the focus back
+            m_focusLosses = 0;
+        }
+        m_activeSince.start();
+        return;
+    }
+    if (QGuiApplication::focusWindow()) {
+        return; // Taken by one of our own windows
+    }
+    if (!m_activeSince.isValid() ||
+        m_activeSince.hasExpired(FOCUS_RECLAIM_RESET_MS)) {
+        m_focusLosses = 0;
+    }
+    if (underMouse() && ++m_focusLosses <= FOCUS_RECLAIM_LOSSES) {
+        startFocusReclaim();
+    } else {
+        m_focusReclaimTimer.stop();
+    }
+}
+
+void CaptureWidget::startFocusReclaim()
+{
+    if (m_focusReclaimEnabled &&
+        !windowFlags().testFlag(Qt::BypassWindowManagerHint)) {
+        m_focusReclaimAttempts = 0;
+        m_focusReclaimTimer.start(FOCUS_RECLAIM_DELAY_MS);
+    }
+}
+
+void CaptureWidget::reclaimFocus()
+{
+    if (!isVisible()) {
+        return;
+    }
+    QWidget* active = QApplication::activeWindow();
+    if (underMouse() && (!active || active == this) &&
+        !QApplication::activePopupWidget()) {
+        activateWindow();
+    }
+    // With most window managers Qt marks the window active as soon as it asks
+    // for the focus, even if the request is refused, so isActiveWindow() can't
+    // tell whether this worked. Ask again in case it was refused or taken back.
+    if (++m_focusReclaimAttempts < FOCUS_RECLAIM_ATTEMPTS) {
+        m_focusReclaimTimer.start(FOCUS_RECLAIM_DELAY_MS
+                                  << m_focusReclaimAttempts);
     }
 }
 

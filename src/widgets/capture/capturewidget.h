@@ -20,6 +20,7 @@
 #include "widgets/capture/magnifierwidget.h"
 #include "widgets/capture/selectionwidget.h"
 
+#include <QElapsedTimer>
 #include <QMessageBox>
 #include <QPointer>
 #include <QTimer>
@@ -93,6 +94,7 @@ private slots:
     void onGridSizeChanged(int size);
 
     void startColorGrab();
+    void reclaimFocus();
 
 public:
     void removeToolObject(int index = -1);
@@ -109,6 +111,7 @@ protected:
     void wheelEvent(QWheelEvent* wheelEvent) override;
     void resizeEvent(QResizeEvent* resizeEvent) override;
     void moveEvent(QMoveEvent* moveEvent) override;
+    void showEvent(QShowEvent* showEvent) override;
     void changeEvent(QEvent* changeEvent) override;
     void closeEvent(QCloseEvent* event) override;
 
@@ -136,6 +139,8 @@ private:
     void pushToolToStack();
     void makeChild(QWidget* w);
     void restoreCircleCountState();
+    void updateFocusReclaim();
+    void startFocusReclaim();
 
     QList<QShortcut*> newShortcut(const QKeySequence& key,
                                   QWidget* parent,
@@ -232,4 +237,11 @@ private:
     int m_gridSize{ 10 };
 
     bool m_clipboardWorkaroundDone{ false };
+
+    // Taking the keyboard focus back on X11, see updateFocusReclaim()
+    bool m_focusReclaimEnabled{ false };
+    QTimer m_focusReclaimTimer;
+    QElapsedTimer m_activeSince;
+    int m_focusLosses{ 0 };
+    int m_focusReclaimAttempts{ 0 };
 };
